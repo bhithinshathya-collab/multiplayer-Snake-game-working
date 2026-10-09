@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Online Multiplayer Snake</title>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <style>
+    body { background: #1a1a24; color: #fff; font-family: sans-serif; text-align: center; margin: 0; padding: 20px; }
+    button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 5px; border-radius: 5px; border: none; background: #00adb5; color: #fff; }
+    button:hover { background: #008c93; }
+    input { padding: 10px; font-size: 16px; width: 220px; border-radius: 5px; border: 1px solid #555; text-align: center; }
+    canvas { background: #222831; border: 3px solid #393e46; display: block; margin: 20px auto; }
+    .status-box { font-size: 18px; margin-top: 10px; color: #00fff5; }
+    .section { margin-bottom: 15px; }
+  </style>
+</head>
+<body>
+
+  <h1>Online Multiplayer Snake (Up to 3 Players)</h1>
+
+  <div id="main-menu" class="section">
+    <button onclick="startSinglePlayer()">Play Single Player</button>
+    <button onclick="showMultiplayerMenu()">Multiplayer</button>
+  </div>
+
+  <div id="mp-menu" class="section" style="display:none;">
+    <button onclick="createOnlineRoom()">Create Online Room</button>
+    <button onclick="showJoinInput()">Join Online Room</button>
+    <button onclick="backToMain()">Back</button>
+  </div>
+
+  <div id="join-section" class="section" style="display:none;">
+    <p>Enter the Room Code from your friend:</p>
+    <input type="text" id="roomCodeInput" placeholder="Enter Room Code"><br><br>
+    <button onclick="joinOnlineRoom()">Connect & Join</button>
+    <button onclick="backToMain()">Back</button>
+  </div>
+
+  <div class="status-box" id="status">Select an option to play.</div>
+
+  <canvas id="gameCanvas" width="600" height="600"></canvas>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const GRID = 20;
+    const TILES = 30;
+
+    let gameMode = 'SINGLE';
+    let gameInterval = null;
+    let peer = null;
+    let connections = [];
+    let isHost = false;
+
+    let players = {
+      1: { x: 5, y: 5, dir: 'RIGHT', body: [{x:5,y:5},{x:4,y:5}], active: true },
+      2: { x: 25, y: 25, dir: 'LEFT', body: [{x:25,y:25},{x:26,y:25}], active: false },
+      3: { x: 25, y: 5, dir: 'DOWN', body: [{x:25,y:5},{x:25,y:4}], active: false }
+    };
+    let food = { x: 15, y: 15 };
+    const COLORS = { 1: '#00fff5', 2: '#ff2e63', 3: '#ffe227' };
+
+    function showMultiplayerMenu() {
+      document.getElementById('main-menu').style.display = 'none';
+      document.getElementById('mp-menu').style.display = 'block';
+      document.getElementById('join-section').style.display = 'none';
+    }
+
+    function showJoinInput() {
+      document.getElementById('mp-menu').style.display = 'none';
+      document.getElementById('join-section').style.display = 'block';
+    }
+
+    function backToMain() {
+      document.getElementById('main-menu').style.display = 'block';
+      document.getElementById('mp-menu').style.display = 'none';
+      document.getElementById('join-section').style.display = 'none';
+      document.getElementById('status').innerText = 'Select an option to play.';
+    }
+
+    function startSinglePlayer() {
+      gameMode = 'SINGLE';
+      backToMain();
+      if (gameInterval) clearInterval(gameInterval);
+      
+      players[1] = { x: 5, y: 5, dir: 'RIGHT', body: [{x:5,y:5},{x:4,y:5}], active: true };
+      players[2].active = false;
+      players[3].active = false;
+      
+      document.getElementById('status').innerText = 'Single Player Mode Active';
+      gameInterval = setInterval(updateSinglePlayer, 100);
+    }
+
+    function updateSinglePlayer() {
+      let p = players[1];
+      if (p.dir === 'UP') p.y--;
+      if (p.dir === 'DOWN') p.y++;
+      if (p.dir === 'LEFT') p.x--;
+      if (p.dir === 'RIGHT') p.x++;
+
+      if (p.x < 0 || p.x >= TILES || p.y < 0 || p.y >= TILES) {
+        alert('Game Over!');
+        clearInterval(gameInterval);
+        return;
+      }
+
+      p.body.unshift({ x: p.x, y: p.y });
+
+      if (p.x === food.x && p.y === food.y) {
+        food = { x: Math.floor(Math.random() * TILES), y: Math.floor(Math.random() * TILES) };
+      } else {
+        p.body.pop();
+      }
+
+      renderGame();
+    }
+
+    function createOnlineRoom() {
+      gameMode = 'MULTI';
+      isHost = true;
+      if (gameInterval) clearInterval(gameInterval);
+
+      const code = Math.random().toString(36).substring(2, 7).toUpperCase();
+      peer = new Peer('snake-room-' + code);
+
+      peer.on('open', () => {
+        document.getElementById('status').innerText = `Online Room Code: ${code} (Share with friends!)`;
+      });
+
+      peer.on('connection', (conn) => {
+        if (connections.length >= 2) {
+          conn.send({ type: 'ERROR', msg: 'Room full' });
+          conn.close();
+          return;
+        }
+
+        connections.push(conn);
+        const pNum = connections.length + 1;
+        players[pNum].active = true;
+
+        conn.send({ type: 'INIT', playerNum: pNum });
+
+        conn.on('data', (data) => {
+          if (data.type === 'MOVE') {
+            players[pNum].dir = data.dir;
+          }
+        });
+      });
+
+      players[1].active = true;
+      gameInterval = setInterval(hostGameLoop, 100);
+    }
+
+    function joinOnlineRoom() {
+      gameMode = 'MULTI';
+      isHost = false;
+      if (gameInterval) clearInterval(gameInterval);
+
+      const code = document.getElementById('roomCodeInput').value.trim().toUpperCase();
+      if (!code) return alert('Enter room code');
+
+      peer = new Peer();
+
+      peer.on('open', () => {
+        const conn = peer.connect('snake-room-' + code);
+
+        conn.on('open', () => {
+          document.getElementById('status').innerText = 'Connected! Waiting for host...';
+        });
+
+        conn.on('data', (data) => {
+          if (data.type === 'INIT') {
+            document.getElementById('status').innerText = `Joined Online Room as Player ${data.playerNum}!`;
+          }
+          if (data.type === 'STATE') {
+            players = data.players;
+            food = data.food;
+            renderGame();
+          }
+        });
+
+        window.clientConn = conn;
+      });
+    }
+
+    function hostGameLoop() {
+      Object.keys(players).forEach(pNum => {
+        let p = players[pNum];
+        if (!p.active) return;
+
+        if (p.dir === 'UP') p.y--;
+        if (p.dir === 'DOWN') p.y++;
+        if (p.dir === 'LEFT') p.x--;
+        if (p.dir === 'RIGHT') p.x++;
+
+        if (p.x < 0) p.x = TILES - 1;
+        if (p.x >= TILES) p.x = 0;
+        if (p.y < 0) p.y = TILES - 1;
+        if (p.y >= TILES) p.y = 0;
+
+        p.body.unshift({ x: p.x, y: p.y });
+
+        if (p.x === food.x && p.y === food.y) {
+          food = { x: Math.floor(Math.random() * TILES), y: Math.floor(Math.random() * TILES) };
+        } else {
+          p.body.pop();
+        }
+      });
+
+      connections.forEach(conn => {
+        conn.send({ type: 'STATE', players, food });
+      });
+
+      renderGame();
+    }
+
+    document.addEventListener('keydown', (e) => {
+      let dir = null;
+      if (e.key === 'ArrowUp' || e.key === 'w') dir = 'UP';
+      if (e.key === 'ArrowDown' || e.key === 's') dir = 'DOWN';
+      if (e.key === 'ArrowLeft' || e.key === 'a') dir = 'LEFT';
+      if (e.key === 'ArrowRight' || e.key === 'd') dir = 'RIGHT';
+
+      if (!dir) return;
+
+      if (gameMode === 'SINGLE') {
+        players[1].dir = dir;
+      } else if (isHost) {
+        players[1].dir = dir;
+      } else if (window.clientConn) {
+        window.clientConn.send({ type: 'MOVE', dir });
+      }
+    });
+
+    function renderGame() {
+      ctx.fillStyle = '#222831';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(food.x * GRID, food.y * GRID, GRID - 2, GRID - 2);
+
+      Object.keys(players).forEach(pNum => {
+        let p = players[pNum];
+        if (!p.active) return;
+
+        ctx.fillStyle = COLORS[pNum];
+        p.body.forEach(part => {
+          ctx.fillRect(part.x * GRID, part.y * GRID, GRID - 2, GRID - 2);
+        });
+      });
+    }
+  </script>
+</body>
+</html>
